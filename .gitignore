@@ -1,6 +1,7 @@
 # Environment
 .env
 secrets/
+temporary.txt
 
 # Node.js
 node_modules/

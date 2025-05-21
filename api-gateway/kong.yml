@@ -1,10 +1,38 @@
 _format_version: "3.0"
 services:
   - name: transfer-service
-    url: http://transfer-service:3000
+    url: http://transfer-service:3002
     routes:
       - name: transfer-route
         paths: ["/transfer"]
         methods: ["POST"]
+        strip_path: true
         plugins:
           - name: jwt
+            config:
+              secret_is_base64: false
+              key_claim_name: iss
+              claims_to_verify: ["exp"]
+
+      # Переносим health-check в routes transfer-service
+      - name: health-route
+        paths: ["/health"]
+        methods: ["GET"]
+        strip_path: true
+        plugins: []  # Отключаем JWT для этого маршрута
+
+  - name: balance-service
+    url: http://balance-service:3000
+    routes:
+      - name: balance-route
+        paths: ["/balance/check-tokens"]
+        methods: ["POST"]
+        strip_path: true
+
+  - name: gas-service
+    url: http://gas-service:3001
+    routes:
+      - name: gas-route
+        paths: ["/gas/check-tx-gas"]
+        methods: ["POST"]
+        strip_path: true

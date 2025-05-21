@@ -1,76 +1,125 @@
 services:
-  # --- Vault для ключей ---
-  vault:
-    image: hashicorp/vault:latest
-    ports:
-      - "8200:8200"
+  # База данных для Kong
+  kong-database:
+    image: postgres:13
     environment:
-      VAULT_DEV_ROOT_TOKEN_ID: "root"
-      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+      POSTGRES_USER: kong
+      POSTGRES_DB: kong
+      POSTGRES_PASSWORD: kong
     volumes:
-      - vault-data:/vault/file
-    cap_add:
-      - IPC_LOCK
+      - kong_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kong"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
-  # --- API Gateway ---
-  api-gateway:
-    image: kong:3.4
-    ports:
-      - "8000:8000"
+  # Инициализация Kong
+  kong-migrations:
+    image: kong:latest
+    depends_on:
+      kong-database:
+        condition: service_healthy
     environment:
-      KONG_DATABASE: "off"
-      KONG_DECLARATIVE_CONFIG: "/etc/kong/kong.yml"
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_PASSWORD: kong
+    command: kong migrations bootstrap
+    restart: on-failure
+
+  # API Gateway
+  kong:
+    image: kong:latest
+    depends_on:
+      - kong-database
+      - kong-migrations
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_PASSWORD: kong
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    ports:
+      - "8000:8000"  # Прокси
+      - "8001:8001"  # Admin API
     volumes:
       - ./api-gateway/kong.yml:/etc/kong/kong.yml
       - ./api-gateway/jwt.conf:/etc/kong/declarative/jwt.conf
-    depends_on:
-      - auth-service
-      - transfer-service
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
 
-  # --- Auth Service ---
-  auth-service:
-    build: ./auth-service
+  # Vault для хранения ключей
+  vault:
+    image: hashicorp/vault:latest
     environment:
-      - API_KEY=${API_KEY}  # Для тестов
-    secrets:
-      - jwt-private-key
-      - jwt-public-key
+      VAULT_DEV_ROOT_TOKEN_ID: "root"
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
     ports:
-      - "3004:3004"
+      - "8200:8200"
+    cap_add:
+      - IPC_LOCK
+    restart: unless-stopped
 
-  # --- Transfer Service ---
-  transfer-service:
-    build: ./transfer-service
+  # Микросервисы
+  balance-service:
+    build:
+      context: ./balance-service
+      dockerfile: Dockerfile
     environment:
       - RPC_URL=${RPC_URL}
       - TOKEN_ADDRESS=${TOKEN_ADDRESS}
+    volumes:
+      - ./secrets/website-public-key.pem:/app/secrets/website-public-key.pem
+    ports:
+      - "3000:3000"
+    depends_on:
+      - kong
+    restart: unless-stopped
+
+  gas-service:
+    build:
+      context: ./gas-service
+      dockerfile: Dockerfile
+    environment:
+      - RPC_URL=${RPC_URL}
+    volumes:
+      - ./secrets/website-public-key.pem:/app/secrets/website-public-key.pem
+    ports:
+      - "3001:3001"
+    depends_on:
+      - kong
+    restart: unless-stopped
+
+  transfer-service:
+    build:
+      context: ./transfer-service
+      dockerfile: Dockerfile
+    environment:
+      - RPC_URL=${RPC_URL}
+      - TOKEN_ADDRESS=${TOKEN_ADDRESS}
+      - WALLET_ADDRESS=${WALLET_ADDRESS}
       - VAULT_ADDR=http://vault:8200
       - VAULT_TOKEN=${VAULT_TOKEN}
-    secrets:
-      - jwt-public-key
+    volumes:
+      - ./secrets/website-public-key.pem:/app/secrets/website-public-key.pem
+    ports:
+      - "3002:3002"
     depends_on:
+      - kong
       - vault
-      - auth-service
+    restart: unless-stopped
 
-  # --- Gas и Balance Service ---
-  gas-service:
-    build: ./gas-service
-    environment:
-      - RPC_URL=${RPC_URL}
-
-  balance-service:
-    build: ./balance-service
-    environment:
-      - RPC_URL=${RPC_URL}
-      - TOKEN_ADDRESS=${TOKEN_ADDRESS}
-
-# --- Секреты ---
-secrets:
-  jwt-private-key:
-    file: ./secrets/jwt-private-key.pem
-  jwt-public-key:
-    file: ./secrets/jwt-public-key.pem
-
-# --- Volumes ---
 volumes:
-  vault-data:
+  kong_data:
+
+secrets:
+  website-public-key:
+    file: ./secrets/website-public-key.pem
