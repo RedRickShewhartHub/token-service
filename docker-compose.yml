@@ -1,0 +1,76 @@
+services:
+  # --- Vault для ключей ---
+  vault:
+    image: hashicorp/vault:latest
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: "root"
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    volumes:
+      - vault-data:/vault/file
+    cap_add:
+      - IPC_LOCK
+
+  # --- API Gateway ---
+  api-gateway:
+    image: kong:3.4
+    ports:
+      - "8000:8000"
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: "/etc/kong/kong.yml"
+    volumes:
+      - ./api-gateway/kong.yml:/etc/kong/kong.yml
+      - ./api-gateway/jwt.conf:/etc/kong/declarative/jwt.conf
+    depends_on:
+      - auth-service
+      - transfer-service
+
+  # --- Auth Service ---
+  auth-service:
+    build: ./auth-service
+    environment:
+      - API_KEY=${API_KEY}  # Для тестов
+    secrets:
+      - jwt-private-key
+      - jwt-public-key
+    ports:
+      - "3004:3004"
+
+  # --- Transfer Service ---
+  transfer-service:
+    build: ./transfer-service
+    environment:
+      - RPC_URL=${RPC_URL}
+      - TOKEN_ADDRESS=${TOKEN_ADDRESS}
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=${VAULT_TOKEN}
+    secrets:
+      - jwt-public-key
+    depends_on:
+      - vault
+      - auth-service
+
+  # --- Gas и Balance Service ---
+  gas-service:
+    build: ./gas-service
+    environment:
+      - RPC_URL=${RPC_URL}
+
+  balance-service:
+    build: ./balance-service
+    environment:
+      - RPC_URL=${RPC_URL}
+      - TOKEN_ADDRESS=${TOKEN_ADDRESS}
+
+# --- Секреты ---
+secrets:
+  jwt-private-key:
+    file: ./secrets/jwt-private-key.pem
+  jwt-public-key:
+    file: ./secrets/jwt-public-key.pem
+
+# --- Volumes ---
+volumes:
+  vault-data:
